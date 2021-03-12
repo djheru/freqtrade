@@ -1,4 +1,4 @@
-FROM python:3.8.5-slim-buster
+FROM python:3.8.5
 
 RUN apt-get update \
   && apt-get -y install curl build-essential libssl-dev sqlite3 \
@@ -17,7 +17,7 @@ ENV LD_LIBRARY_PATH /usr/local/lib
 
 # Install dependencies
 COPY requirements.txt requirements-common.txt requirements-hyperopt.txt /freqtrade/
-RUN pip install numpy --no-cache-dir \
+RUN pip install numpy --no-cache-dir --no-binary :all: \
   && pip install git+https://github.com/freqtrade/technical \
   && pip install -r requirements-hyperopt.txt --no-cache-dir
 
