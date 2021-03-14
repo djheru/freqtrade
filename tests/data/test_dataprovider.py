@@ -6,7 +6,7 @@ from pandas import DataFrame
 
 from freqtrade.data.dataprovider import DataProvider
 from freqtrade.exceptions import ExchangeError, OperationalException
-from freqtrade.pairlist.pairlistmanager import PairListManager
+from freqtrade.plugins.pairlistmanager import PairListManager
 from freqtrade.state import RunMode
 from tests.conftest import get_patched_exchange
 
@@ -50,6 +50,31 @@ def test_historic_ohlcv(mocker, default_conf, ohlcv_history):
     assert isinstance(data, DataFrame)
     assert historymock.call_count == 1
     assert historymock.call_args_list[0][1]["timeframe"] == "5m"
+
+
+def test_historic_ohlcv_dataformat(mocker, default_conf, ohlcv_history):
+    hdf5loadmock = MagicMock(return_value=ohlcv_history)
+    jsonloadmock = MagicMock(return_value=ohlcv_history)
+    mocker.patch("freqtrade.data.history.hdf5datahandler.HDF5DataHandler._ohlcv_load", hdf5loadmock)
+    mocker.patch("freqtrade.data.history.jsondatahandler.JsonDataHandler._ohlcv_load", jsonloadmock)
+
+    default_conf["runmode"] = RunMode.BACKTEST
+    exchange = get_patched_exchange(mocker, default_conf)
+    dp = DataProvider(default_conf, exchange)
+    data = dp.historic_ohlcv("UNITTEST/BTC", "5m")
+    assert isinstance(data, DataFrame)
+    hdf5loadmock.assert_not_called()
+    jsonloadmock.assert_called_once()
+
+    # Swiching to dataformat hdf5
+    hdf5loadmock.reset_mock()
+    jsonloadmock.reset_mock()
+    default_conf["dataformat_ohlcv"] = "hdf5"
+    dp = DataProvider(default_conf, exchange)
+    data = dp.historic_ohlcv("UNITTEST/BTC", "5m")
+    assert isinstance(data, DataFrame)
+    hdf5loadmock.assert_called_once()
+    jsonloadmock.assert_not_called()
 
 
 def test_get_pair_dataframe(mocker, default_conf, ohlcv_history):
@@ -132,7 +157,7 @@ def test_orderbook(mocker, default_conf, order_book_l2):
     res = dp.orderbook('ETH/BTC', 5)
     assert order_book_l2.call_count == 1
     assert order_book_l2.call_args_list[0][0][0] == 'ETH/BTC'
-    assert order_book_l2.call_args_list[0][0][1] == 5
+    assert order_book_l2.call_args_list[0][0][1] >= 5
 
     assert type(res) is dict
     assert 'bids' in res

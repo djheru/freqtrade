@@ -5,6 +5,7 @@ logfile.txt
 user_data/
 freqtrade-plot.html
 freqtrade-profit-plot.html
+freqtrade/rpc/api_server/ui/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

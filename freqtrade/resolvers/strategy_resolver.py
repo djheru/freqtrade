@@ -11,11 +11,11 @@ from inspect import getfullargspec
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from freqtrade.constants import (REQUIRED_ORDERTIF, REQUIRED_ORDERTYPES,
-                                 USERPATH_STRATEGIES)
+from freqtrade.constants import REQUIRED_ORDERTIF, REQUIRED_ORDERTYPES, USERPATH_STRATEGIES
 from freqtrade.exceptions import OperationalException
 from freqtrade.resolvers import IResolver
 from freqtrade.strategy.interface import IStrategy
+
 
 logger = logging.getLogger(__name__)
 
@@ -68,17 +68,21 @@ class StrategyResolver(IResolver):
                       ("trailing_stop_positive",          None,        None),
                       ("trailing_stop_positive_offset",   0.0,         None),
                       ("trailing_only_offset_is_reached", None,        None),
+                      ("use_custom_stoploss",             None,        None),
                       ("process_only_new_candles",        None,        None),
                       ("order_types",                     None,        None),
                       ("order_time_in_force",             None,        None),
                       ("stake_currency",                  None,        None),
                       ("stake_amount",                    None,        None),
+                      ("protections",                     None,        None),
                       ("startup_candle_count",            None,        None),
                       ("unfilledtimeout",                 None,        None),
                       ("use_sell_signal",                 True,        'ask_strategy'),
                       ("sell_profit_only",                False,       'ask_strategy'),
                       ("ignore_roi_if_buy_signal",        False,       'ask_strategy'),
+                      ("sell_profit_offset",              0.0,         'ask_strategy'),
                       ("disable_dataframe_checks",        False,       None),
+                      ("ignore_buying_expired_candle_after",  0,       'ask_strategy')
                       ]
         for attribute, default, subkey in attributes:
             if subkey:
@@ -88,9 +92,6 @@ class StrategyResolver(IResolver):
                 StrategyResolver._override_attribute_helper(strategy, config,
                                                             attribute, default)
 
-        # Assign deprecated variable - to not break users code relying on this.
-        strategy.ticker_interval = strategy.timeframe
-
         # Loop this list again to have output combined
         for attribute, _, subkey in attributes:
             if subkey and attribute in config[subkey]:
@@ -98,11 +99,7 @@ class StrategyResolver(IResolver):
             elif attribute in config:
                 logger.info("Strategy using %s: %s", attribute, config[attribute])
 
-        # Sort and apply type conversions
-        strategy.minimal_roi = OrderedDict(sorted(
-            {int(key): value for (key, value) in strategy.minimal_roi.items()}.items(),
-            key=lambda t: t[0]))
-        strategy.stoploss = float(strategy.stoploss)
+        StrategyResolver._normalize_attributes(strategy)
 
         StrategyResolver._strategy_sanity_validations(strategy)
         return strategy
@@ -130,6 +127,24 @@ class StrategyResolver(IResolver):
         elif default is not None:
             setattr(strategy, attribute, default)
             config[attribute] = default
+
+    @staticmethod
+    def _normalize_attributes(strategy: IStrategy) -> IStrategy:
+        """
+        Normalize attributes to have the correct type.
+        """
+        # Assign deprecated variable - to not break users code relying on this.
+        if hasattr(strategy, 'timeframe'):
+            strategy.ticker_interval = strategy.timeframe
+
+        # Sort and apply type conversions
+        if hasattr(strategy, 'minimal_roi'):
+            strategy.minimal_roi = OrderedDict(sorted(
+                {int(key): value for (key, value) in strategy.minimal_roi.items()}.items(),
+                key=lambda t: t[0]))
+        if hasattr(strategy, 'stoploss'):
+            strategy.stoploss = float(strategy.stoploss)
+        return strategy
 
     @staticmethod
     def _strategy_sanity_validations(strategy):
@@ -174,7 +189,9 @@ class StrategyResolver(IResolver):
 
         strategy = StrategyResolver._load_object(paths=abs_paths,
                                                  object_name=strategy_name,
-                                                 kwargs={'config': config})
+                                                 add_source=True,
+                                                 kwargs={'config': config},
+                                                 )
         if strategy:
             strategy._populate_fun_len = len(getfullargspec(strategy.populate_indicators).args)
             strategy._buy_fun_len = len(getfullargspec(strategy.populate_buy_trend).args)

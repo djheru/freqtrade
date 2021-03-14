@@ -5,16 +5,12 @@
 
 <!-- Place this tag where you want the button to render. -->
 <a class="github-button" href="https://github.com/freqtrade/freqtrade" data-icon="octicon-star" data-size="large" aria-label="Star freqtrade/freqtrade on GitHub">Star</a>
-<!-- Place this tag where you want the button to render. -->
 <a class="github-button" href="https://github.com/freqtrade/freqtrade/fork" data-icon="octicon-repo-forked" data-size="large" aria-label="Fork freqtrade/freqtrade on GitHub">Fork</a>
-<!-- Place this tag where you want the button to render. -->
-<a class="github-button" href="https://github.com/freqtrade/freqtrade/archive/master.zip" data-icon="octicon-cloud-download" data-size="large" aria-label="Download freqtrade/freqtrade on GitHub">Download</a>
-<!-- Place this tag where you want the button to render. -->
-<a class="github-button" href="https://github.com/freqtrade" data-size="large" aria-label="Follow @freqtrade on GitHub">Follow @freqtrade</a>
+<a class="github-button" href="https://github.com/freqtrade/freqtrade/archive/stable.zip" data-icon="octicon-cloud-download" data-size="large" aria-label="Download freqtrade/freqtrade on GitHub">Download</a>
 
 ## Introduction
 
-Freqtrade is a crypto-currency algorithmic trading software developed in python (3.6+) and supported on Windows, macOS and Linux.
+Freqtrade is a crypto-currency algorithmic trading software developed in python (3.7+) and supported on Windows, macOS and Linux.
 
 !!! Danger "DISCLAIMER"
     This software is for educational purposes only. Do not risk money which you are afraid to lose. USE THE SOFTWARE AT YOUR OWN RISK. THE AUTHORS AND ALL AFFILIATES ASSUME NO RESPONSIBILITY FOR YOUR TRADING RESULTS.
@@ -35,15 +31,27 @@ Freqtrade is a crypto-currency algorithmic trading software developed in python 
 - Control/Monitor: Use Telegram or a REST API (start/stop the bot, show profit/loss, daily summary, current open trades results, etc.).
 - Analyse: Further analysis can be performed on either Backtesting data or Freqtrade trading history (SQL database), including automated standard plots, and methods to load the data into [interactive environments](data-analysis.md).
 
+## Supported exchange marketplaces
+
+Please read the [exchange specific notes](exchanges.md) to learn about eventual, special configurations needed for each exchange.
+
+- [X] [Binance](https://www.binance.com/) ([*Note for binance users](exchanges.md#blacklists))
+- [X] [Bittrex](https://bittrex.com/)
+- [X] [FTX](https://ftx.com)
+- [X] [Kraken](https://kraken.com/)
+- [ ] [potentially many others](https://github.com/ccxt/ccxt/). _(We cannot guarantee they will work)_
+
+### Community tested
+
+Exchanges confirmed working by the community:
+
+- [X] [Bitvavo](https://bitvavo.com/)
+
 ## Requirements
-
-### Up to date clock
-
-The clock on the system running the bot must be accurate, synchronized to a NTP server frequently enough to avoid problems with communication to the exchanges.
 
 ### Hardware requirements
 
-To run this bot we recommend you a cloud instance with a minimum of:
+To run this bot we recommend you a linux cloud instance with a minimum of:
 
 - 2GB RAM
 - 1GB disk space
@@ -55,7 +63,7 @@ To run this bot we recommend you a cloud instance with a minimum of:
 
 Alternatively
 
-- Python 3.6.x
+- Python 3.7+
 - pip (pip3)
 - git
 - TA-Lib
@@ -63,11 +71,14 @@ Alternatively
 
 ## Support
 
-### Help / Slack
-For any questions not covered by the documentation or for further information about the bot, we encourage you to join our passionate  Slack community.
+### Help / Discord / Slack
 
-Click [here](https://join.slack.com/t/highfrequencybot/shared_invite/enQtNjU5ODcwNjI1MDU3LTU1MTgxMjkzNmYxNWE1MDEzYzQ3YmU4N2MwZjUyNjJjODRkMDVkNjg4YTAyZGYzYzlhOTZiMTE4ZjQ4YzM0OGE) to join the Freqtrade Slack channel.
+For any questions not covered by the documentation or for further information about the bot, or to simply engage with like-minded individuals, we encourage you to join our slack channel.
+
+Please check out our [discord server](https://discord.gg/MA9v74M).
+
+You can also join our [Slack channel](https://join.slack.com/t/highfrequencybot/shared_invite/zt-mm786y93-Fxo37glxMY9g8OQC5AoOIw).
 
 ## Ready to try?
 
-Begin by reading our installation guide [for docker](docker.md), or for [installation without docker](installation.md).
+Begin by reading our installation guide [for docker](docker_quickstart.md) (recommended), or for [installation without docker](installation.md).

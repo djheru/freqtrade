@@ -10,6 +10,7 @@ import logging
 import random
 import warnings
 from collections import OrderedDict
+from datetime import datetime
 from math import ceil
 from operator import itemgetter
 from pathlib import Path
@@ -21,23 +22,21 @@ import rapidjson
 import tabulate
 from colorama import Fore, Style
 from colorama import init as colorama_init
-from joblib import (Parallel, cpu_count, delayed, dump, load,
-                    wrap_non_picklable_objects)
+from joblib import Parallel, cpu_count, delayed, dump, load, wrap_non_picklable_objects
 from pandas import DataFrame, isna, json_normalize
 
-from freqtrade.constants import DATETIME_PRINT_FORMAT
+from freqtrade.constants import DATETIME_PRINT_FORMAT, LAST_BT_RESULT_FN
 from freqtrade.data.converter import trim_dataframe
 from freqtrade.data.history import get_timerange
 from freqtrade.exceptions import OperationalException
-from freqtrade.misc import plural, round_dict
+from freqtrade.misc import file_dump_json, plural, round_dict
 from freqtrade.optimize.backtesting import Backtesting
 # Import IHyperOpt and IHyperOptLoss to allow unpickling classes from these modules
 from freqtrade.optimize.hyperopt_interface import IHyperOpt  # noqa: F401
-from freqtrade.optimize.hyperopt_loss_interface import \
-    IHyperOptLoss  # noqa: F401
-from freqtrade.resolvers.hyperopt_resolver import (HyperOptLossResolver,
-                                                   HyperOptResolver)
+from freqtrade.optimize.hyperopt_loss_interface import IHyperOptLoss  # noqa: F401
+from freqtrade.resolvers.hyperopt_resolver import HyperOptLossResolver, HyperOptResolver
 from freqtrade.strategy import IStrategy
+
 
 # Suppress scikit-learn FutureWarnings from skopt
 with warnings.catch_warnings():
@@ -74,22 +73,22 @@ class Hyperopt:
         self.backtesting = Backtesting(self.config)
 
         self.custom_hyperopt = HyperOptResolver.load_hyperopt(self.config)
+        self.custom_hyperopt.__class__.strategy = self.backtesting.strategy
 
         self.custom_hyperoptloss = HyperOptLossResolver.load_hyperoptloss(self.config)
         self.calculate_loss = self.custom_hyperoptloss.hyperopt_loss_function
-
+        time_now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        strategy = str(self.config['strategy'])
         self.results_file = (self.config['user_data_dir'] /
-                             'hyperopt_results' / 'hyperopt_results.pickle')
+                             'hyperopt_results' /
+                             f'strategy_{strategy}_hyperopt_results_{time_now}.pickle')
         self.data_pickle_file = (self.config['user_data_dir'] /
                                  'hyperopt_results' / 'hyperopt_tickerdata.pkl')
         self.total_epochs = config.get('epochs', 0)
 
         self.current_best_loss = 100
 
-        if not self.config.get('hyperopt_continue'):
-            self.clean_hyperopt()
-        else:
-            logger.info("Continuing on previous hyperopt results.")
+        self.clean_hyperopt()
 
         self.num_epochs_saved = 0
 
@@ -98,14 +97,14 @@ class Hyperopt:
 
         # Populate functions here (hasattr is slow so should not be run during "regular" operations)
         if hasattr(self.custom_hyperopt, 'populate_indicators'):
-            self.backtesting.strategy.advise_indicators = \
-                self.custom_hyperopt.populate_indicators  # type: ignore
+            self.backtesting.strategy.advise_indicators = (  # type: ignore
+                self.custom_hyperopt.populate_indicators)  # type: ignore
         if hasattr(self.custom_hyperopt, 'populate_buy_trend'):
-            self.backtesting.strategy.advise_buy = \
-                self.custom_hyperopt.populate_buy_trend  # type: ignore
+            self.backtesting.strategy.advise_buy = (  # type: ignore
+                self.custom_hyperopt.populate_buy_trend)  # type: ignore
         if hasattr(self.custom_hyperopt, 'populate_sell_trend'):
-            self.backtesting.strategy.advise_sell = \
-                self.custom_hyperopt.populate_sell_trend  # type: ignore
+            self.backtesting.strategy.advise_sell = (  # type: ignore
+                self.custom_hyperopt.populate_sell_trend)  # type: ignore
 
         # Use max_open_trades for hyperopt as well, except --disable-max-market-positions is set
         if self.config.get('use_max_market_positions', True):
@@ -165,6 +164,10 @@ class Hyperopt:
             self.num_epochs_saved = num_epochs
             logger.debug(f"{self.num_epochs_saved} {plural(self.num_epochs_saved, 'epoch')} "
                          f"saved to '{self.results_file}'.")
+            # Store hyperopt filename
+            latest_filename = Path.joinpath(self.results_file.parent, LAST_BT_RESULT_FN)
+            file_dump_json(latest_filename, {'latest_hyperopt': str(self.results_file.name)},
+                           log=False)
 
     @staticmethod
     def _read_results(results_file: Path) -> List:
@@ -262,6 +265,11 @@ class Hyperopt:
                     ),
                     default=str, indent=4, number_mode=rapidjson.NM_NATIVE)
                 params_result += f"minimal_roi = {minimal_roi_result}"
+            elif space == 'trailing':
+
+                for k, v in space_params.items():
+                    params_result += f'{k} = {v}\n'
+
             else:
                 params_result += f"{space}_params = {pformat(space_params, indent=4)}"
                 params_result = params_result.replace("}", "\n}").replace("{", "{\n ")
@@ -324,8 +332,9 @@ class Hyperopt:
                          'results_metrics.avg_profit', 'results_metrics.total_profit',
                          'results_metrics.profit', 'results_metrics.duration',
                          'loss', 'is_initial_point', 'is_best']]
-        trials.columns = ['Best', 'Epoch', 'Trades', 'W/D/L', 'Avg profit', 'Total profit',
-                          'Profit', 'Avg duration', 'Objective', 'is_initial_point', 'is_best']
+        trials.columns = ['Best', 'Epoch', 'Trades', ' Win Draw Loss', 'Avg profit',
+                          'Total profit', 'Profit', 'Avg duration', 'Objective',
+                          'is_initial_point', 'is_best']
         trials['is_profit'] = False
         trials.loc[trials['is_initial_point'], 'Best'] = '*     '
         trials.loc[trials['is_best'], 'Best'] = 'Best'
@@ -413,14 +422,16 @@ class Hyperopt:
         trials['Stake currency'] = config['stake_currency']
 
         base_metrics = ['Best', 'current_epoch', 'results_metrics.trade_count',
-                        'results_metrics.avg_profit', 'results_metrics.total_profit',
+                        'results_metrics.avg_profit', 'results_metrics.median_profit',
+                        'results_metrics.total_profit',
                         'Stake currency', 'results_metrics.profit', 'results_metrics.duration',
                         'loss', 'is_initial_point', 'is_best']
         param_metrics = [("params_dict."+param) for param in results[0]['params_dict'].keys()]
         trials = trials[base_metrics + param_metrics]
 
-        base_columns = ['Best', 'Epoch', 'Trades', 'Avg profit', 'Total profit', 'Stake currency',
-                        'Profit', 'Avg duration', 'Objective', 'is_initial_point', 'is_best']
+        base_columns = ['Best', 'Epoch', 'Trades', 'Avg profit', 'Median profit', 'Total profit',
+                        'Stake currency', 'Profit', 'Avg duration', 'Objective',
+                        'is_initial_point', 'is_best']
         param_columns = list(results[0]['params_dict'].keys())
         trials.columns = base_columns + param_columns
 
@@ -502,16 +513,16 @@ class Hyperopt:
         params_details = self._get_params_details(params_dict)
 
         if self.has_space('roi'):
-            self.backtesting.strategy.minimal_roi = \
-                self.custom_hyperopt.generate_roi_table(params_dict)
+            self.backtesting.strategy.minimal_roi = (  # type: ignore
+                self.custom_hyperopt.generate_roi_table(params_dict))
 
         if self.has_space('buy'):
-            self.backtesting.strategy.advise_buy = \
-                self.custom_hyperopt.buy_strategy_generator(params_dict)
+            self.backtesting.strategy.advise_buy = (  # type: ignore
+                self.custom_hyperopt.buy_strategy_generator(params_dict))
 
         if self.has_space('sell'):
-            self.backtesting.strategy.advise_sell = \
-                self.custom_hyperopt.sell_strategy_generator(params_dict)
+            self.backtesting.strategy.advise_sell = (  # type: ignore
+                self.custom_hyperopt.sell_strategy_generator(params_dict))
 
         if self.has_space('stoploss'):
             self.backtesting.strategy.stoploss = params_dict['stoploss']
@@ -531,17 +542,19 @@ class Hyperopt:
 
         backtesting_results = self.backtesting.backtest(
             processed=processed,
-            stake_amount=self.config['stake_amount'],
-            start_date=min_date,
-            end_date=max_date,
+            start_date=min_date.datetime,
+            end_date=max_date.datetime,
             max_open_trades=self.max_open_trades,
             position_stacking=self.position_stacking,
+            enable_protections=self.config.get('enable_protections', False),
+
         )
         return self._get_results_dict(backtesting_results, min_date, max_date,
-                                      params_dict, params_details)
+                                      params_dict, params_details,
+                                      processed=processed)
 
     def _get_results_dict(self, backtesting_results, min_date, max_date,
-                          params_dict, params_details):
+                          params_dict, params_details, processed: Dict[str, DataFrame]):
         results_metrics = self._calculate_results_metrics(backtesting_results)
         results_explanation = self._format_results_explanation_string(results_metrics)
 
@@ -555,7 +568,8 @@ class Hyperopt:
         loss: float = MAX_LOSS
         if trade_count >= self.config['hyperopt_min_trades']:
             loss = self.calculate_loss(results=backtesting_results, trade_count=trade_count,
-                                       min_date=min_date.datetime, max_date=max_date.datetime)
+                                       min_date=min_date.datetime, max_date=max_date.datetime,
+                                       config=self.config, processed=processed)
         return {
             'loss': loss,
             'params_dict': params_dict,
@@ -566,20 +580,20 @@ class Hyperopt:
         }
 
     def _calculate_results_metrics(self, backtesting_results: DataFrame) -> Dict:
-        wins = len(backtesting_results[backtesting_results.profit_percent > 0])
-        draws = len(backtesting_results[backtesting_results.profit_percent == 0])
-        losses = len(backtesting_results[backtesting_results.profit_percent < 0])
+        wins = len(backtesting_results[backtesting_results['profit_ratio'] > 0])
+        draws = len(backtesting_results[backtesting_results['profit_ratio'] == 0])
+        losses = len(backtesting_results[backtesting_results['profit_ratio'] < 0])
         return {
             'trade_count': len(backtesting_results.index),
             'wins': wins,
             'draws': draws,
             'losses': losses,
-            'winsdrawslosses': f"{wins}/{draws}/{losses}",
-            'avg_profit': backtesting_results.profit_percent.mean() * 100.0,
-            'median_profit': backtesting_results.profit_percent.median() * 100.0,
-            'total_profit': backtesting_results.profit_abs.sum(),
-            'profit': backtesting_results.profit_percent.sum() * 100.0,
-            'duration': backtesting_results.trade_duration.mean(),
+            'winsdrawslosses': f"{wins:>4} {draws:>4} {losses:>4}",
+            'avg_profit': backtesting_results['profit_ratio'].mean() * 100.0,
+            'median_profit': backtesting_results['profit_ratio'].median() * 100.0,
+            'total_profit': backtesting_results['profit_abs'].sum(),
+            'profit': backtesting_results['profit_ratio'].sum() * 100.0,
+            'duration': backtesting_results['trade_duration'].mean(),
         }
 
     def _format_results_explanation_string(self, results_metrics: Dict) -> str:
@@ -642,7 +656,7 @@ class Hyperopt:
         # Trim startup period from analyzed dataframe
         for pair, df in preprocessed.items():
             preprocessed[pair] = trim_dataframe(df, timerange)
-        min_date, max_date = get_timerange(data)
+        min_date, max_date = get_timerange(preprocessed)
 
         logger.info(f'Hyperopting with data from {min_date.strftime(DATETIME_PRINT_FORMAT)} '
                     f'up to {max_date.strftime(DATETIME_PRINT_FORMAT)} '
@@ -651,12 +665,13 @@ class Hyperopt:
         dump(preprocessed, self.data_pickle_file)
 
         # We don't need exchange instance anymore while running hyperopt
-        self.backtesting.exchange = None  # type: ignore
+        self.backtesting.exchange.close()
+        self.backtesting.exchange._api = None  # type: ignore
+        self.backtesting.exchange._api_async = None  # type: ignore
+        # self.backtesting.exchange = None  # type: ignore
         self.backtesting.pairlists = None  # type: ignore
         self.backtesting.strategy.dp = None  # type: ignore
         IStrategy.dp = None  # type: ignore
-
-        self.epochs = self.load_previous_results(self.results_file)
 
         cpus = cpu_count()
         logger.info(f"Found {cpus} CPU cores. Let's make them scream!")

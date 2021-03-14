@@ -9,6 +9,7 @@ from freqtrade import constants
 from freqtrade.exceptions import OperationalException
 from freqtrade.state import RunMode
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,6 +47,8 @@ def validate_config_schema(conf: Dict[str, Any]) -> Dict[str, Any]:
     conf_schema = deepcopy(constants.CONF_SCHEMA)
     if conf.get('runmode', RunMode.OTHER) in (RunMode.DRY_RUN, RunMode.LIVE):
         conf_schema['required'] = constants.SCHEMA_TRADE_REQUIRED
+    elif conf.get('runmode', RunMode.OTHER) in (RunMode.BACKTEST, RunMode.HYPEROPT):
+        conf_schema['required'] = constants.SCHEMA_BACKTEST_REQUIRED
     else:
         conf_schema['required'] = constants.SCHEMA_MINIMAL_REQUIRED
     try:
@@ -53,7 +56,7 @@ def validate_config_schema(conf: Dict[str, Any]) -> Dict[str, Any]:
         return conf
     except ValidationError as e:
         logger.critical(
-            f"Invalid configuration. See config.json.example. Reason: {e}"
+            f"Invalid configuration. Reason: {e}"
         )
         raise ValidationError(
             best_match(Draft4Validator(conf_schema).iter_errors(conf)).message
@@ -73,6 +76,7 @@ def validate_config_consistency(conf: Dict[str, Any]) -> None:
     _validate_trailing_stoploss(conf)
     _validate_edge(conf)
     _validate_whitelist(conf)
+    _validate_protections(conf)
     _validate_unlimited_amount(conf)
 
     # validate configuration before returning
@@ -136,6 +140,10 @@ def _validate_edge(conf: Dict[str, Any]) -> None:
             "Edge and VolumePairList are incompatible, "
             "Edge will override whatever pairs VolumePairlist selects."
         )
+    if not conf.get('ask_strategy', {}).get('use_sell_signal', True):
+        raise OperationalException(
+            "Edge requires `use_sell_signal` to be True, otherwise no sells will happen."
+        )
 
 
 def _validate_whitelist(conf: Dict[str, Any]) -> None:
@@ -150,3 +158,22 @@ def _validate_whitelist(conf: Dict[str, Any]) -> None:
         if (pl.get('method') == 'StaticPairList'
                 and not conf.get('exchange', {}).get('pair_whitelist')):
             raise OperationalException("StaticPairList requires pair_whitelist to be set.")
+
+
+def _validate_protections(conf: Dict[str, Any]) -> None:
+    """
+    Validate protection configuration validity
+    """
+
+    for prot in conf.get('protections', []):
+        if ('stop_duration' in prot and 'stop_duration_candles' in prot):
+            raise OperationalException(
+                "Protections must specify either `stop_duration` or `stop_duration_candles`.\n"
+                f"Please fix the protection {prot.get('method')}"
+                )
+
+        if ('lookback_period' in prot and 'lookback_period_candles' in prot):
+            raise OperationalException(
+                "Protections must specify either `lookback_period` or `lookback_period_candles`.\n"
+                f"Please fix the protection {prot.get('method')}"
+            )

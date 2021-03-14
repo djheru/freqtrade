@@ -4,6 +4,7 @@ Definition of cli arguments used in arguments.py
 from argparse import ArgumentTypeError
 
 from freqtrade import __version__, constants
+from freqtrade.constants import HYPEROPT_LOSS_BUILTIN
 
 
 def check_int_positive(value: str) -> int:
@@ -109,6 +110,11 @@ AVAILABLE_CLI_OPTIONS = {
         help='Enforce dry-run for trading (removes Exchange secrets and simulates trades).',
         action='store_true',
     ),
+    "dry_run_wallet": Arg(
+        '--dry-run-wallet', '--starting-balance',
+        help='Starting balance, used for backtesting / hyperopt and dry-runs.',
+        type=float,
+    ),
     # Optimize common
     "timeframe": Arg(
         '-i', '--timeframe', '--ticker-interval',
@@ -127,7 +133,6 @@ AVAILABLE_CLI_OPTIONS = {
     "stake_amount": Arg(
         '--stake-amount',
         help='Override the value of the `stake_amount` configuration setting.',
-        type=float,
     ),
     # Backtesting
     "position_stacking": Arg(
@@ -142,6 +147,14 @@ AVAILABLE_CLI_OPTIONS = {
         '(same as setting `max_open_trades` to a very high number).',
         action='store_false',
         default=True,
+    ),
+    "enable_protections": Arg(
+        '--enable-protections', '--enableprotections',
+        help='Enable protections for backtesting.'
+        'Will slow backtesting down by a considerable amount, but will include '
+        'configured protections',
+        action='store_true',
+        default=False,
     ),
     "strategy_list": Arg(
         '--strategy-list',
@@ -252,23 +265,19 @@ AVAILABLE_CLI_OPTIONS = {
         metavar='INT',
         default=1,
     ),
-    "hyperopt_continue": Arg(
-        "--continue",
-        help="Continue hyperopt from previous runs. "
-        "By default, temporary files will be removed and hyperopt will start from scratch.",
-        default=False,
-        action='store_true',
-    ),
     "hyperopt_loss": Arg(
         '--hyperopt-loss',
         help='Specify the class name of the hyperopt loss function class (IHyperOptLoss). '
         'Different functions can generate completely different results, '
         'since the target for optimization is different. Built-in Hyperopt-loss-functions are: '
-        'DefaultHyperOptLoss, OnlyProfitHyperOptLoss, SharpeHyperOptLoss, SharpeHyperOptLossDaily, '
-        'SortinoHyperOptLoss, SortinoHyperOptLossDaily.'
-        '(default: `%(default)s`).',
+        f'{", ".join(HYPEROPT_LOSS_BUILTIN)}',
         metavar='NAME',
-        default=constants.DEFAULT_HYPEROPT_LOSS,
+    ),
+    "hyperoptexportfilename": Arg(
+        '--hyperopt-filename',
+        help='Hyperopt result filename.'
+        'Example: `--hyperopt-filename=hyperopt_results_2020-09-27_16-20-48.pickle`',
+        metavar='FILENAME',
     ),
     # List exchanges
     "print_one_column": Arg(
@@ -357,13 +366,11 @@ AVAILABLE_CLI_OPTIONS = {
         '--data-format-ohlcv',
         help='Storage format for downloaded candle (OHLCV) data. (default: `%(default)s`).',
         choices=constants.AVAILABLE_DATAHANDLERS,
-        default='json'
     ),
     "dataformat_trades": Arg(
         '--data-format-trades',
         help='Storage format for downloaded trades data. (default: `%(default)s`).',
         choices=constants.AVAILABLE_DATAHANDLERS,
-        default='jsongz'
     ),
     "exchange": Arg(
         '--exchange',
@@ -375,7 +382,7 @@ AVAILABLE_CLI_OPTIONS = {
         help='Specify which tickers to download. Space-separated list. '
         'Default: `1m 5m`.',
         choices=['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h',
-                 '6h', '8h', '12h', '1d', '3d', '1w'],
+                 '6h', '8h', '12h', '1d', '3d', '1w', '2w', '1M', '1y'],
         default=['1m', '5m'],
         nargs='+',
     ),
@@ -383,6 +390,12 @@ AVAILABLE_CLI_OPTIONS = {
         '--erase',
         help='Clean all existing data for the selected exchange/pairs/timeframes.',
         action='store_true',
+    ),
+    "erase_ui_only": Arg(
+        '--erase',
+        help="Clean UI folder, don't download new version.",
+        action='store_true',
+        default=False,
     ),
     # Templating options
     "template": Arg(

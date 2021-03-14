@@ -9,10 +9,35 @@ from pathlib import Path
 from typing import Any
 from typing.io import IO
 
-import numpy as np
 import rapidjson
 
+from freqtrade.constants import DECIMAL_PER_COIN_FALLBACK, DECIMALS_PER_COIN
+
+
 logger = logging.getLogger(__name__)
+
+
+def decimals_per_coin(coin: str):
+    """
+    Helper method getting decimal amount for this coin
+    example usage: f".{decimals_per_coin('USD')}f"
+    :param coin: Which coin are we printing the price / value for
+    """
+    return DECIMALS_PER_COIN.get(coin, DECIMAL_PER_COIN_FALLBACK)
+
+
+def round_coin_value(value: float, coin: str, show_coin_name=True) -> str:
+    """
+    Get price value for this coin
+    :param value: Value to be printed
+    :param coin: Which coin are we printing the price / value for
+    :param show_coin_name: Return string in format: "222.22 USDT" or "222.22"
+    :return: Formatted / rounded value (with or without coin name)
+    """
+    if show_coin_name:
+        return f"{value:.{decimals_per_coin(coin)}f} {coin}"
+    else:
+        return f"{value:.{decimals_per_coin(coin)}f}"
 
 
 def shorten_date(_date: str) -> str:
@@ -27,21 +52,7 @@ def shorten_date(_date: str) -> str:
     return new_date
 
 
-############################################
-# Used by scripts                          #
-# Matplotlib doesn't support ::datetime64, #
-# so we need to convert it into ::datetime #
-############################################
-def datesarray_to_datetimearray(dates: np.ndarray) -> np.ndarray:
-    """
-    Convert an pandas-array of timestamps into
-    An numpy-array of datetimes
-    :return: numpy-array of datetime
-    """
-    return dates.dt.to_pydatetime()
-
-
-def file_dump_json(filename: Path, data: Any, is_zip: bool = False) -> None:
+def file_dump_json(filename: Path, data: Any, is_zip: bool = False, log: bool = True) -> None:
     """
     Dump JSON data into a file
     :param filename: file to create
@@ -52,12 +63,14 @@ def file_dump_json(filename: Path, data: Any, is_zip: bool = False) -> None:
     if is_zip:
         if filename.suffix != '.gz':
             filename = filename.with_suffix('.gz')
-        logger.info(f'dumping json to "{filename}"')
+        if log:
+            logger.info(f'dumping json to "{filename}"')
 
-        with gzip.open(filename, 'w') as fp:
-            rapidjson.dump(data, fp, default=str, number_mode=rapidjson.NM_NATIVE)
+        with gzip.open(filename, 'w') as fpz:
+            rapidjson.dump(data, fpz, default=str, number_mode=rapidjson.NM_NATIVE)
     else:
-        logger.info(f'dumping json to "{filename}"')
+        if log:
+            logger.info(f'dumping json to "{filename}"')
         with open(filename, 'w') as fp:
             rapidjson.dump(data, fp, default=str, number_mode=rapidjson.NM_NATIVE)
 

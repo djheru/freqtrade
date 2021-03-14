@@ -3,19 +3,25 @@ import logging
 import time
 from functools import wraps
 
-from freqtrade.exceptions import (DDosProtection, RetryableOrderError,
-                                  TemporaryError)
+from freqtrade.exceptions import DDosProtection, RetryableOrderError, TemporaryError
+
 
 logger = logging.getLogger(__name__)
 
 
+# Maximum default retry count.
+# Functions are always called RETRY_COUNT + 1 times (for the original call)
 API_RETRY_COUNT = 4
+API_FETCH_ORDER_RETRY_COUNT = 5
+
 BAD_EXCHANGES = {
     "bitmex": "Various reasons.",
     "bitstamp": "Does not provide history. "
                 "Details in https://github.com/freqtrade/freqtrade/issues/1983",
     "hitbtc": "This API cannot be used with Freqtrade. "
               "Use `hitbtc2` exchange id to access this exchange.",
+    "phemex": "Does not provide history. ",
+    "poloniex": "Does not provide fetch_order endpoint to fetch both open and closed orders.",
     **dict.fromkeys([
         'adara',
         'anxpro',

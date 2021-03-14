@@ -11,20 +11,19 @@ import pytest
 from jsonschema import ValidationError
 
 from freqtrade.commands import Arguments
-from freqtrade.configuration import (Configuration, check_exchange,
-                                     remove_credentials,
+from freqtrade.configuration import (Configuration, check_exchange, remove_credentials,
                                      validate_config_consistency)
 from freqtrade.configuration.config_validation import validate_config_schema
-from freqtrade.configuration.deprecated_settings import (
-    check_conflicting_settings, process_deprecated_setting,
-    process_temporary_deprecated_settings)
+from freqtrade.configuration.deprecated_settings import (check_conflicting_settings,
+                                                         process_deprecated_setting,
+                                                         process_removed_setting,
+                                                         process_temporary_deprecated_settings)
 from freqtrade.configuration.load_config import load_config_file, log_config_error_range
 from freqtrade.constants import DEFAULT_DB_DRYRUN_URL, DEFAULT_DB_PROD_URL
 from freqtrade.exceptions import OperationalException
-from freqtrade.loggers import _set_loggers, setup_logging
+from freqtrade.loggers import _set_loggers, setup_logging, setup_logging_pre
 from freqtrade.state import RunMode
-from tests.conftest import (log_has, log_has_re,
-                            patched_configuration_load_config_file)
+from tests.conftest import log_has, log_has_re, patched_configuration_load_config_file
 
 
 @pytest.fixture(scope="function")
@@ -431,7 +430,8 @@ def test_setup_configuration_with_arguments(mocker, default_conf, caplog) -> Non
         '--enable-position-stacking',
         '--disable-max-market-positions',
         '--timerange', ':100',
-        '--export', '/bar/foo'
+        '--export', '/bar/foo',
+        '--stake-amount', 'unlimited'
     ]
 
     args = Arguments(arglist).get_parsed_arg()
@@ -464,6 +464,8 @@ def test_setup_configuration_with_arguments(mocker, default_conf, caplog) -> Non
 
     assert 'export' in config
     assert log_has('Parameter --export detected: {} ...'.format(config['export']), caplog)
+    assert 'stake_amount' in config
+    assert config['stake_amount'] == 'unlimited'
 
 
 def test_setup_configuration_with_stratlist(mocker, default_conf, caplog) -> None:
@@ -665,7 +667,7 @@ def test_set_loggers() -> None:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="does not run on windows")
-def test_set_loggers_syslog(mocker):
+def test_set_loggers_syslog():
     logger = logging.getLogger()
     orig_handlers = logger.handlers
     logger.handlers = []
@@ -674,11 +676,41 @@ def test_set_loggers_syslog(mocker):
               'logfile': 'syslog:/dev/log',
               }
 
+    setup_logging_pre()
     setup_logging(config)
-    assert len(logger.handlers) == 2
+    assert len(logger.handlers) == 3
     assert [x for x in logger.handlers if type(x) == logging.handlers.SysLogHandler]
     assert [x for x in logger.handlers if type(x) == logging.StreamHandler]
+    assert [x for x in logger.handlers if type(x) == logging.handlers.BufferingHandler]
+    # setting up logging again should NOT cause the loggers to be added a second time.
+    setup_logging(config)
+    assert len(logger.handlers) == 3
     # reset handlers to not break pytest
+    logger.handlers = orig_handlers
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="does not run on windows")
+def test_set_loggers_Filehandler(tmpdir):
+    logger = logging.getLogger()
+    orig_handlers = logger.handlers
+    logger.handlers = []
+    logfile = Path(tmpdir) / 'ft_logfile.log'
+    config = {'verbosity': 2,
+              'logfile': str(logfile),
+              }
+
+    setup_logging_pre()
+    setup_logging(config)
+    assert len(logger.handlers) == 3
+    assert [x for x in logger.handlers if type(x) == logging.handlers.RotatingFileHandler]
+    assert [x for x in logger.handlers if type(x) == logging.StreamHandler]
+    assert [x for x in logger.handlers if type(x) == logging.handlers.BufferingHandler]
+    # setting up logging again should NOT cause the loggers to be added a second time.
+    setup_logging(config)
+    assert len(logger.handlers) == 3
+    # reset handlers to not break pytest
+    if logfile.exists:
+        logfile.unlink()
     logger.handlers = orig_handlers
 
 
@@ -714,20 +746,23 @@ def test_set_loggers_journald_importerror(mocker, import_fails):
     logger.handlers = orig_handlers
 
 
-def test_set_logfile(default_conf, mocker):
+def test_set_logfile(default_conf, mocker, tmpdir):
     patched_configuration_load_config_file(mocker, default_conf)
-
+    f = Path(tmpdir / "test_file.log")
+    assert not f.is_file()
     arglist = [
-        'trade', '--logfile', 'test_file.log',
+        'trade', '--logfile', str(f),
     ]
     args = Arguments(arglist).get_parsed_arg()
     configuration = Configuration(args)
     validated_conf = configuration.load_config()
 
-    assert validated_conf['logfile'] == "test_file.log"
-    f = Path("test_file.log")
+    assert validated_conf['logfile'] == str(f)
     assert f.is_file()
-    f.unlink()
+    try:
+        f.unlink()
+    except Exception:
+        pass
 
 
 def test_load_config_warn_forcebuy(default_conf, mocker, caplog) -> None:
@@ -809,6 +844,21 @@ def test_validate_edge(edge_conf):
     validate_config_consistency(edge_conf)
 
 
+def test_validate_edge2(edge_conf):
+    edge_conf.update({"ask_strategy": {
+        "use_sell_signal": True,
+    }})
+    # Passes test
+    validate_config_consistency(edge_conf)
+
+    edge_conf.update({"ask_strategy": {
+        "use_sell_signal": False,
+    }})
+    with pytest.raises(OperationalException, match="Edge requires `use_sell_signal` to be True, "
+                       "otherwise no sells will happen."):
+        validate_config_consistency(edge_conf)
+
+
 def test_validate_whitelist(default_conf):
     default_conf['runmode'] = RunMode.DRY_RUN
     # Test regular case - has whitelist and uses StaticPairlist
@@ -831,6 +881,25 @@ def test_validate_whitelist(default_conf):
     del conf['exchange']['pair_whitelist']
 
     validate_config_consistency(conf)
+
+
+@pytest.mark.parametrize('protconf,expected', [
+    ([], None),
+    ([{"method": "StoplossGuard", "lookback_period": 2000, "stop_duration_candles": 10}], None),
+    ([{"method": "StoplossGuard", "lookback_period_candles": 20, "stop_duration": 10}], None),
+    ([{"method": "StoplossGuard", "lookback_period_candles": 20, "lookback_period": 2000,
+       "stop_duration": 10}], r'Protections must specify either `lookback_period`.*'),
+    ([{"method": "StoplossGuard", "lookback_period": 20, "stop_duration": 10,
+       "stop_duration_candles": 10}], r'Protections must specify either `stop_duration`.*'),
+])
+def test_validate_protections(default_conf, protconf, expected):
+    conf = deepcopy(default_conf)
+    conf['protections'] = protconf
+    if expected:
+        with pytest.raises(OperationalException, match=expected):
+            validate_config_consistency(conf)
+    else:
+        validate_config_consistency(conf)
 
 
 def test_load_config_test_comments() -> None:
@@ -1005,7 +1074,7 @@ def test_pairlist_resolving_fallback(mocker):
 
     args = Arguments(arglist).get_parsed_arg()
     # Fix flaky tests if config.json exists
-    args["config"] = None
+    args['config'] = None
 
     configuration = Configuration(args, RunMode.OTHER)
     config = configuration.get_config()
@@ -1015,13 +1084,11 @@ def test_pairlist_resolving_fallback(mocker):
     assert config['datadir'] == Path.cwd() / "user_data/data/binance"
 
 
+@pytest.mark.skip(reason='Currently no deprecated / moved sections')
+# The below is kept as a sample for the future.
 @pytest.mark.parametrize("setting", [
         ("ask_strategy", "use_sell_signal", True,
          "experimental", "use_sell_signal", False),
-        ("ask_strategy", "sell_profit_only", False,
-         "experimental", "sell_profit_only", True),
-        ("ask_strategy", "ignore_roi_if_buy_signal", False,
-         "experimental", "ignore_roi_if_buy_signal", True),
     ])
 def test_process_temporary_deprecated_settings(mocker, default_conf, setting, caplog):
     patched_configuration_load_config_file(mocker, default_conf)
@@ -1051,7 +1118,27 @@ def test_process_temporary_deprecated_settings(mocker, default_conf, setting, ca
     assert default_conf[setting[0]][setting[1]] == setting[5]
 
 
-def test_process_deprecated_setting_edge(mocker, edge_conf, caplog):
+@pytest.mark.parametrize("setting", [
+        ("experimental", "use_sell_signal", False),
+        ("experimental", "sell_profit_only", True),
+        ("experimental", "ignore_roi_if_buy_signal", True),
+    ])
+def test_process_removed_settings(mocker, default_conf, setting):
+    patched_configuration_load_config_file(mocker, default_conf)
+
+    # Create sections for new and deprecated settings
+    # (they may not exist in the config)
+    default_conf[setting[0]] = {}
+    # Assign removed setting
+    default_conf[setting[0]][setting[1]] = setting[2]
+
+    # New and deprecated settings are conflicting ones
+    with pytest.raises(OperationalException,
+                       match=r'Setting .* has been moved'):
+        process_temporary_deprecated_settings(default_conf)
+
+
+def test_process_deprecated_setting_edge(mocker, edge_conf):
     patched_configuration_load_config_file(mocker, edge_conf)
     edge_conf.update({'edge': {
         'enabled': True,
@@ -1148,6 +1235,30 @@ def test_process_deprecated_setting(mocker, default_conf, caplog):
                                'sectionB', 'deprecated_setting')
     assert not log_has_re('DEPRECATED', caplog)
     assert default_conf['sectionA']['new_setting'] == 'valA'
+
+
+def test_process_removed_setting(mocker, default_conf, caplog):
+    patched_configuration_load_config_file(mocker, default_conf)
+
+    # Create sections for new and deprecated settings
+    # (they may not exist in the config)
+    default_conf['sectionA'] = {}
+    default_conf['sectionB'] = {}
+    # Assign new setting
+    default_conf['sectionB']['somesetting'] = 'valA'
+
+    # Only new setting exists (nothing should happen)
+    process_removed_setting(default_conf,
+                            'sectionA', 'somesetting',
+                            'sectionB', 'somesetting')
+    # Assign removed setting
+    default_conf['sectionA']['somesetting'] = 'valB'
+
+    with pytest.raises(OperationalException,
+                       match=r"Setting .* has been moved"):
+        process_removed_setting(default_conf,
+                                'sectionA', 'somesetting',
+                                'sectionB', 'somesetting')
 
 
 def test_process_deprecated_ticker_interval(mocker, default_conf, caplog):

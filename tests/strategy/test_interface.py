@@ -1,6 +1,6 @@
 # pragma pylint: disable=missing-docstring, C0103
-
 import logging
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import arrow
@@ -8,15 +8,17 @@ import pytest
 from pandas import DataFrame
 
 from freqtrade.configuration import TimeRange
+from freqtrade.data.dataprovider import DataProvider
 from freqtrade.data.history import load_data
 from freqtrade.exceptions import StrategyError
-from freqtrade.persistence import Trade
+from freqtrade.persistence import PairLocks, Trade
 from freqtrade.resolvers import StrategyResolver
+from freqtrade.strategy.interface import SellCheckTuple, SellType
 from freqtrade.strategy.strategy_wrapper import strategy_safe_wrapper
-from freqtrade.data.dataprovider import DataProvider
 from tests.conftest import log_has, log_has_re
 
 from .strats.default_strategy import DefaultStrategy
+
 
 # Avoid to reinit the same object again and again
 _STRATEGY = DefaultStrategy(config={})
@@ -104,9 +106,29 @@ def test_get_signal_old_dataframe(default_conf, mocker, caplog, ohlcv_history):
     assert log_has('Outdated history for pair xyz. Last tick is 16 minutes old', caplog)
 
 
-def test_assert_df_raise(default_conf, mocker, caplog, ohlcv_history):
-    # default_conf defines a 5m interval. we check interval * 2 + 5m
-    # this is necessary as the last candle is removed (partial candles) by default
+def test_ignore_expired_candle(default_conf):
+    default_conf.update({'strategy': 'DefaultStrategy'})
+    strategy = StrategyResolver.load_strategy(default_conf)
+    strategy.ignore_buying_expired_candle_after = 60
+
+    latest_date = datetime(2020, 12, 30, 7, 0, 0, tzinfo=timezone.utc)
+    # Add 1 candle length as the "latest date" defines candle open.
+    current_time = latest_date + timedelta(seconds=80 + 300)
+
+    assert strategy.ignore_expired_candle(latest_date=latest_date,
+                                          current_time=current_time,
+                                          timeframe_seconds=300,
+                                          buy=True) is True
+
+    current_time = latest_date + timedelta(seconds=30 + 300)
+
+    assert not strategy.ignore_expired_candle(latest_date=latest_date,
+                                              current_time=current_time,
+                                              timeframe_seconds=300,
+                                              buy=True) is True
+
+
+def test_assert_df_raise(mocker, caplog, ohlcv_history):
     ohlcv_history.loc[1, 'date'] = arrow.utcnow().shift(minutes=-16)
     # Take a copy to correctly modify the call
     mocked_history = ohlcv_history.copy()
@@ -126,28 +148,30 @@ def test_assert_df_raise(default_conf, mocker, caplog, ohlcv_history):
                    caplog)
 
 
-def test_assert_df(default_conf, mocker, ohlcv_history, caplog):
+def test_assert_df(ohlcv_history, caplog):
+    df_len = len(ohlcv_history) - 1
     # Ensure it's running when passed correctly
     _STRATEGY.assert_df(ohlcv_history, len(ohlcv_history),
-                        ohlcv_history.loc[1, 'close'], ohlcv_history.loc[1, 'date'])
+                        ohlcv_history.loc[df_len, 'close'], ohlcv_history.loc[df_len, 'date'])
 
     with pytest.raises(StrategyError, match=r"Dataframe returned from strategy.*length\."):
         _STRATEGY.assert_df(ohlcv_history, len(ohlcv_history) + 1,
-                            ohlcv_history.loc[1, 'close'], ohlcv_history.loc[1, 'date'])
+                            ohlcv_history.loc[df_len, 'close'], ohlcv_history.loc[df_len, 'date'])
 
     with pytest.raises(StrategyError,
                        match=r"Dataframe returned from strategy.*last close price\."):
         _STRATEGY.assert_df(ohlcv_history, len(ohlcv_history),
-                            ohlcv_history.loc[1, 'close'] + 0.01, ohlcv_history.loc[1, 'date'])
+                            ohlcv_history.loc[df_len, 'close'] + 0.01,
+                            ohlcv_history.loc[df_len, 'date'])
     with pytest.raises(StrategyError,
                        match=r"Dataframe returned from strategy.*last date\."):
         _STRATEGY.assert_df(ohlcv_history, len(ohlcv_history),
-                            ohlcv_history.loc[1, 'close'], ohlcv_history.loc[0, 'date'])
+                            ohlcv_history.loc[df_len, 'close'], ohlcv_history.loc[0, 'date'])
 
     _STRATEGY.disable_dataframe_checks = True
     caplog.clear()
     _STRATEGY.assert_df(ohlcv_history, len(ohlcv_history),
-                        ohlcv_history.loc[1, 'close'], ohlcv_history.loc[0, 'date'])
+                        ohlcv_history.loc[2, 'close'], ohlcv_history.loc[0, 'date'])
     assert log_has_re(r"Dataframe returned from strategy.*last date\.", caplog)
     # reset to avoid problems in other tests due to test leakage
     _STRATEGY.disable_dataframe_checks = False
@@ -261,14 +285,14 @@ def test_min_roi_reached3(default_conf, fee) -> None:
     strategy = StrategyResolver.load_strategy(default_conf)
     strategy.minimal_roi = min_roi
     trade = Trade(
-            pair='ETH/BTC',
-            stake_amount=0.001,
-            amount=5,
-            open_date=arrow.utcnow().shift(hours=-1).datetime,
-            fee_open=fee.return_value,
-            fee_close=fee.return_value,
-            exchange='bittrex',
-            open_rate=1,
+        pair='ETH/BTC',
+        stake_amount=0.001,
+        amount=5,
+        open_date=arrow.utcnow().shift(hours=-1).datetime,
+        fee_open=fee.return_value,
+        fee_close=fee.return_value,
+        exchange='bittrex',
+        open_rate=1,
     )
 
     assert not strategy.min_roi_reached(trade, 0.02, arrow.utcnow().shift(minutes=-56).datetime)
@@ -283,6 +307,77 @@ def test_min_roi_reached3(default_conf, fee) -> None:
     # Should not trigger with 20% profit since after 55 minutes only 30% is active.
     assert not strategy.min_roi_reached(trade, 0.20, arrow.utcnow().shift(minutes=-2).datetime)
     assert strategy.min_roi_reached(trade, 0.31, arrow.utcnow().shift(minutes=-2).datetime)
+
+
+@pytest.mark.parametrize(
+    'profit,adjusted,expected,trailing,custom,profit2,adjusted2,expected2,custom_stop', [
+        # Profit, adjusted stoploss(absolute), profit for 2nd call, enable trailing,
+        #   enable custom stoploss, expected after 1st call, expected after 2nd call
+        (0.2, 0.9, SellType.NONE, False, False, 0.3, 0.9, SellType.NONE, None),
+        (0.2, 0.9, SellType.NONE, False, False, -0.2, 0.9, SellType.STOP_LOSS, None),
+        (0.2, 1.14, SellType.NONE, True, False, 0.05, 1.14, SellType.TRAILING_STOP_LOSS, None),
+        (0.01, 0.96, SellType.NONE, True, False, 0.05, 1, SellType.NONE, None),
+        (0.05, 1, SellType.NONE, True, False, -0.01, 1, SellType.TRAILING_STOP_LOSS, None),
+        # Default custom case - trails with 10%
+        (0.05, 0.95, SellType.NONE, False, True, -0.02, 0.95, SellType.NONE, None),
+        (0.05, 0.95, SellType.NONE, False, True, -0.06, 0.95, SellType.TRAILING_STOP_LOSS, None),
+        (0.05, 1, SellType.NONE, False, True, -0.06, 1, SellType.TRAILING_STOP_LOSS,
+         lambda **kwargs: -0.05),
+        (0.05, 1, SellType.NONE, False, True, 0.09, 1.04, SellType.NONE,
+         lambda **kwargs: -0.05),
+        (0.05, 0.95, SellType.NONE, False, True, 0.09, 0.98, SellType.NONE,
+         lambda current_profit, **kwargs: -0.1 if current_profit < 0.6 else -(current_profit * 2)),
+        # Error case - static stoploss in place
+        (0.05, 0.9, SellType.NONE, False, True, 0.09, 0.9, SellType.NONE,
+         lambda **kwargs: None),
+    ])
+def test_stop_loss_reached(default_conf, fee, profit, adjusted, expected, trailing, custom,
+                           profit2, adjusted2, expected2, custom_stop) -> None:
+
+    default_conf.update({'strategy': 'DefaultStrategy'})
+
+    strategy = StrategyResolver.load_strategy(default_conf)
+    trade = Trade(
+        pair='ETH/BTC',
+        stake_amount=0.01,
+        amount=1,
+        open_date=arrow.utcnow().shift(hours=-1).datetime,
+        fee_open=fee.return_value,
+        fee_close=fee.return_value,
+        exchange='bittrex',
+        open_rate=1,
+    )
+    trade.adjust_min_max_rates(trade.open_rate)
+    strategy.trailing_stop = trailing
+    strategy.trailing_stop_positive = -0.05
+    strategy.use_custom_stoploss = custom
+    original_stopvalue = strategy.custom_stoploss
+    if custom_stop:
+        strategy.custom_stoploss = custom_stop
+
+    now = arrow.utcnow().datetime
+    sl_flag = strategy.stop_loss_reached(current_rate=trade.open_rate * (1 + profit), trade=trade,
+                                         current_time=now, current_profit=profit,
+                                         force_stoploss=0, high=None)
+    assert isinstance(sl_flag, SellCheckTuple)
+    assert sl_flag.sell_type == expected
+    if expected == SellType.NONE:
+        assert sl_flag.sell_flag is False
+    else:
+        assert sl_flag.sell_flag is True
+    assert round(trade.stop_loss, 2) == adjusted
+
+    sl_flag = strategy.stop_loss_reached(current_rate=trade.open_rate * (1 + profit2), trade=trade,
+                                         current_time=now, current_profit=profit2,
+                                         force_stoploss=0, high=None)
+    assert sl_flag.sell_type == expected2
+    if expected2 == SellType.NONE:
+        assert sl_flag.sell_flag is False
+    else:
+        assert sl_flag.sell_flag is True
+    assert round(trade.stop_loss, 2) == adjusted2
+
+    strategy.custom_stoploss = original_stopvalue
 
 
 def test_analyze_ticker_default(ohlcv_history, mocker, caplog) -> None:
@@ -358,22 +453,19 @@ def test__analyze_ticker_internal_skip_analyze(ohlcv_history, mocker, caplog) ->
     assert log_has('Skipping TA Analysis for already analyzed candle', caplog)
 
 
+@pytest.mark.usefixtures("init_persistence")
 def test_is_pair_locked(default_conf):
     default_conf.update({'strategy': 'DefaultStrategy'})
+    PairLocks.timeframe = default_conf['timeframe']
     strategy = StrategyResolver.load_strategy(default_conf)
-    # dict should be empty
-    assert not strategy._pair_locked_until
+    # No lock should be present
+    assert len(PairLocks.get_pair_locks(None)) == 0
 
     pair = 'ETH/BTC'
     assert not strategy.is_pair_locked(pair)
-    strategy.lock_pair(pair, arrow.utcnow().shift(minutes=4).datetime)
+    strategy.lock_pair(pair, arrow.now(timezone.utc).shift(minutes=4).datetime)
     # ETH/BTC locked for 4 minutes
     assert strategy.is_pair_locked(pair)
-
-    # Test lock does not change
-    lock = strategy._pair_locked_until[pair]
-    strategy.lock_pair(pair, arrow.utcnow().shift(minutes=2).datetime)
-    assert lock == strategy._pair_locked_until[pair]
 
     # XRP/BTC should not be locked now
     pair = 'XRP/BTC'
@@ -386,6 +478,32 @@ def test_is_pair_locked(default_conf):
     pair = 'ETH/BTC'
     strategy.unlock_pair(pair)
     assert not strategy.is_pair_locked(pair)
+
+    pair = 'BTC/USDT'
+    # Lock until 14:30
+    lock_time = datetime(2020, 5, 1, 14, 30, 0, tzinfo=timezone.utc)
+    # Subtract 2 seconds, as locking rounds up to the next candle.
+    strategy.lock_pair(pair, lock_time - timedelta(seconds=2))
+
+    assert not strategy.is_pair_locked(pair)
+    # latest candle is from 14:20, lock goes to 14:30
+    assert strategy.is_pair_locked(pair, lock_time + timedelta(minutes=-10))
+    assert strategy.is_pair_locked(pair, lock_time + timedelta(minutes=-50))
+
+    # latest candle is from 14:25 (lock should be lifted)
+    # Since this is the "new candle" available at 14:30
+    assert not strategy.is_pair_locked(pair, lock_time + timedelta(minutes=-4))
+
+    # Should not be locked after time expired
+    assert not strategy.is_pair_locked(pair, lock_time + timedelta(minutes=10))
+
+    # Change timeframe to 15m
+    strategy.timeframe = '15m'
+    # Candle from 14:14 - lock goes until 14:30
+    assert strategy.is_pair_locked(pair, lock_time + timedelta(minutes=-16))
+    assert strategy.is_pair_locked(pair, lock_time + timedelta(minutes=-15, seconds=-2))
+    # Candle from 14:15 - lock goes until 14:30
+    assert not strategy.is_pair_locked(pair, lock_time + timedelta(minutes=-15))
 
 
 def test_is_informative_pairs_callback(default_conf):
