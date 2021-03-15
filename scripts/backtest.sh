@@ -12,7 +12,7 @@ if [[ "$1" == *"help"* ]]; then
 fi
 
 # variables
-default_strategy=${strategy:-WeightedBBRSIStrategy}
+default_strategy=${STRATEGY:-WeightedBBRSIStrategy}
 test_strategy=${1:-$default_strategy}
 
 current_date=$(date '+%Y%m%d')
@@ -24,6 +24,8 @@ end_date=${3:-$current_date}
 default_exchange='binanceus'
 exchange=${4:-$default_exchange}
 
+echo "Backtesting with strategy: $test_strategy"
+sleep 3
 docker-compose run --rm \
   freqtrade backtesting \
   -s $test_strategy \
